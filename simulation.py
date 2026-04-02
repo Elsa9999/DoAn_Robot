@@ -54,6 +54,7 @@ from task_scheduler import (
     GRASP_STATES
 )
 from hmi_panel import HMIPanel
+from scada_gui import ScadaPanel
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -181,6 +182,10 @@ class SimulationApp:
         # ── 6. TẠO HMI PANEL ────────────────────────────────────────────────
         self.hmi = HMIPanel()
         self.hud_id = -1
+        self._manual_hud_id = -1   # HUD cảnh báo MANUAL MODE riêng
+
+        # ── 7. TẠO SCADA PANEL (tkinter) ─────────────────────────────────────
+        self.scada = ScadaPanel()
 
         print(f"\n  [RUN] Vong lap Real-time dang chay (240Hz). "
               f"Nhan Ctrl+C de dung.\n")
@@ -280,90 +285,194 @@ class SimulationApp:
         """
         Vòng lặp Real-time 240Hz — chạy toàn bộ hệ thống.
 
-        Mỗi tick:
-          1. Đọc HMI Panel (nút bấm + slider)
-          2. Áp dụng Z-Offset vào pick_contact_pos
-          3. Lấy vị trí EE hiện tại
-          4. Cập nhật TaskScheduler → waypoint + trạng thái kẹp + góc kẹp
-          5. Xây dựng target_orn dựa trên state (GRASP_STATES → xoay theo vật)
-          6. Gọi IK + motor (UR5eRobot.move_to)
-          7. Cập nhật Gripper pose
-          8. Cập nhật HUD display
-          9. Step physics + delay 240Hz
+        Hai chế độ vận hành (điều khiển qua SCADA Panel):
+
+        ═══ CHẾ ĐỘ AUTO ═══
+          Giữ nguyên 100% logic Pick & Place tự động:
+          HMI → Z-Offset → TaskScheduler → IK → Gripper → HUD
+
+        ═══ CHẾ ĐỘ MANUAL ═══
+          Bỏ qua TaskScheduler. Operator trực tiếp điều khiển:
+          - IK Mode: Nhập X, Y, Z → robot.move_to()
+          - FK Mode: Kéo 6 thanh trượt → setJointMotorControl2()
+          Gripper tắt (nhả vật). HUD hiện cảnh báo đỏ.
         """
         try:
             while True:
                 current_time = time.time()
 
-                # ── 1. ĐỌC HMI PANEL ────────────────────────────────────────
-                hmi = self.hmi.read_inputs()
+                # ── 0. CẬP NHẬT SCADA GUI (tkinter) ──────────────────────────
+                # Xử lý sự kiện tkinter (click, kéo slider, gõ phím)
+                # Nếu operator đóng cửa sổ SCADA → thoát simulation
+                if not self.scada.update_gui():
+                    print("  [SCADA] Operator dong cua so SCADA → Dang thoat...")
+                    break
 
-                # Nút START / PAUSE
-                if hmi.pause_pressed:
-                    self.task.paused = not self.task.paused
-                    self.task.e_stop = False
-                    status_str = "PAUSE" if self.task.paused else "RESUME"
-                    print(f"  [HMI]  [{status_str}] Nhan nut START/PAUSE")
+                # Đọc chế độ hiện tại từ SCADA Panel
+                scada_mode = self.scada.mode   # "AUTO" hoặc "MANUAL"
 
-                    # Nếu RESUME và đang IDLE → khởi động chu trình mới
-                    if not self.task.paused and self.task.state == STATE_IDLE:
-                        ee_pos = self.robot.get_ee_position()
-                        self.task.start(ee_pos)
-
-                # Nút EMERGENCY HOME
-                if hmi.estop_pressed:
-                    if not self.task.e_stop:
-                        self.task.e_stop  = True
-                        self.task.paused  = False
-                        print("  [HMI]  [E-STOP] EMERGENCY HOME duoc kich hoat!")
-
-                # ── 2. ÁP DỤNG Z-OFFSET ─────────────────────────────────────
-                z_offset = hmi.z_offset
-                base_pick_z  = self.scene['pick_pos'][2] + 0.06
-                base_place_z = self.scene['place_pos'][2] + 0.06
-                self.task.pick_contact_pos[2] = base_pick_z  + z_offset
-                self.task.pick_pos[2]         = self.scene['pick_pos'][2] + z_offset
-
-                # ── 3. LẤY VỊ TRÍ EE HIỆN TẠI ──────────────────────────────
+                # ── LẤY VỊ TRÍ EE HIỆN TẠI (dùng chung cho cả 2 chế độ) ────
                 ee_pos = self.robot.get_ee_position()
 
-                # ── 4. CẬP NHẬT TASK SCHEDULER ──────────────────────────────
-                waypoint, is_grasping, grasp_yaw = self.task.update(
-                    ee_pos, current_time
-                )
+                # ══════════════════════════════════════════════════════════════
+                #  CHẾ ĐỘ AUTO — Giữ nguyên 100% logic Pick & Place
+                # ══════════════════════════════════════════════════════════════
+                if scada_mode == "AUTO":
 
-                # ── 5. XÂY DỰNG TARGET ORIENTATION ──────────────────────────
-                # Giai đoạn PICK/PLACE: xoay gripper theo góc kẹp từ Vision
-                # Giai đoạn khác: gripper thẳng xuống (yaw=0)
-                if self.task.state in GRASP_STATES:
-                    grasp_orn = p.getQuaternionFromEuler(
-                        [math.pi, 0, grasp_yaw]
+                    # ── 1. ĐỌC HMI PANEL ─────────────────────────────────────
+                    hmi = self.hmi.read_inputs()
+
+                    # Nút START / PAUSE
+                    if hmi.pause_pressed:
+                        self.task.paused = not self.task.paused
+                        self.task.e_stop = False
+                        status_str = "PAUSE" if self.task.paused else "RESUME"
+                        print(f"  [HMI]  [{status_str}] Nhan nut START/PAUSE")
+
+                        # Nếu RESUME và đang IDLE → khởi động chu trình mới
+                        if (not self.task.paused and
+                                self.task.state == STATE_IDLE):
+                            self.task.start(ee_pos)
+
+                    # Nút EMERGENCY HOME
+                    if hmi.estop_pressed:
+                        if not self.task.e_stop:
+                            self.task.e_stop  = True
+                            self.task.paused  = False
+                            print("  [HMI]  [E-STOP] EMERGENCY HOME!")
+
+                    # ── 2. ÁP DỤNG Z-OFFSET ──────────────────────────────────
+                    z_offset = hmi.z_offset
+                    base_pick_z = self.scene['pick_pos'][2] + 0.06
+                    self.task.pick_contact_pos[2] = base_pick_z + z_offset
+                    self.task.pick_pos[2] = (
+                        self.scene['pick_pos'][2] + z_offset
                     )
+
+                    # ── 3. CẬP NHẬT TASK SCHEDULER ───────────────────────────
+                    waypoint, is_grasping, grasp_yaw = self.task.update(
+                        ee_pos, current_time
+                    )
+
+                    # ── 4. XÂY DỰNG TARGET ORIENTATION ───────────────────────
+                    if self.task.state in GRASP_STATES:
+                        grasp_orn = p.getQuaternionFromEuler(
+                            [math.pi, 0, grasp_yaw]
+                        )
+                    else:
+                        grasp_orn = p.getQuaternionFromEuler(
+                            [math.pi, 0, 0]
+                        )
+
+                    # ── 5. GIẢI IK + MOTOR ───────────────────────────────────
+                    self.robot.move_to(waypoint, orientation=grasp_orn)
+
+                    # ── 6. CẬP NHẬT GRIPPER ──────────────────────────────────
+                    self.gripper.update_pose(
+                        is_grasping, self.scene['box_id']
+                    )
+
+                    # ── 7. CẬP NHẬT HUD (AUTO) ───────────────────────────────
+                    self.hud_id = self.task.update_hud(
+                        ee_pos, self.hud_id, z_offset
+                    )
+
+                    # Xóa HUD cảnh báo MANUAL nếu đang có
+                    if self._manual_hud_id != -1:
+                        p.removeUserDebugItem(self._manual_hud_id)
+                        self._manual_hud_id = -1
+
+                    # ── Cập nhật SCADA status ────────────────────────────────
+                    self.scada.update_status(
+                        ee_pos,
+                        self.robot.get_joint_states(),
+                        "AUTO",
+                        state=self.task.state,
+                        loop_count=self.task.loop_count
+                    )
+
+                # ══════════════════════════════════════════════════════════════
+                #  CHẾ ĐỘ MANUAL — Operator điều khiển trực tiếp qua SCADA
+                # ══════════════════════════════════════════════════════════════
                 else:
-                    grasp_orn = p.getQuaternionFromEuler(
-                        [math.pi, 0, 0]
+                    manual_sub = self.scada.manual_sub  # "IK" hoặc "FK"
+
+                    # ── MANUAL IK: Operator nhập tọa độ X, Y, Z ──────────────
+                    if manual_sub == "IK":
+                        if self.scada.ik_run_flag:
+                            target = self.scada.ik_target
+                            orn = p.getQuaternionFromEuler(
+                                [math.pi, 0, 0]
+                            )
+                            self.robot.move_to(target, orientation=orn)
+                            # Giữ cờ True để robot tiếp tục hội tụ về target
+                            # (IK cần nhiều bước stepSimulation)
+
+                    # ── MANUAL FK: Operator kéo 6 thanh trượt ────────────────
+                    elif manual_sub == "FK":
+                        angles = self.scada.fk_angles
+                        for i, joint_idx in enumerate(
+                            self.robot.active_joints
+                        ):
+                            if i < len(angles):
+                                p.setJointMotorControl2(
+                                    bodyIndex=self.robot.robot_id,
+                                    jointIndex=joint_idx,
+                                    controlMode=p.POSITION_CONTROL,
+                                    targetPosition=angles[i],
+                                    force=self.robot.DEFAULT_MAX_FORCE,
+                                    maxVelocity=self.robot.DEFAULT_MAX_VEL
+                                )
+                        # Tắt cờ IK khi chuyển sang FK
+                        self.scada.ik_run_flag = False
+
+                    # ── Tắt gripper (nhả vật) trong MANUAL ───────────────────
+                    self.gripper.update_pose(
+                        False, self.scene['box_id']
                     )
 
-                # ── 6. GIẢI IK + MOTOR ──────────────────────────────────────
-                self.robot.move_to(waypoint, orientation=grasp_orn)
+                    # ── HUD cảnh báo MANUAL MODE (chữ đỏ) ────────────────────
+                    manual_hud_text = (
+                        f"⚠️  SCADA MANUAL MODE ({manual_sub})\n"
+                        f"EE Pos : ({ee_pos[0]:+.3f}, {ee_pos[1]:+.3f}, "
+                        f"{ee_pos[2]:+.3f})\n"
+                        f"Grasp  : OFF [NHA] — Manual Override"
+                    )
+                    if self._manual_hud_id == -1:
+                        self._manual_hud_id = p.addUserDebugText(
+                            manual_hud_text, [-0.6, -0.5, 0.9],
+                            textColorRGB=[1.0, 0.2, 0.1],
+                            textSize=1.1
+                        )
+                    else:
+                        p.addUserDebugText(
+                            manual_hud_text, [-0.6, -0.5, 0.9],
+                            textColorRGB=[1.0, 0.2, 0.1],
+                            textSize=1.1,
+                            replaceItemUniqueId=self._manual_hud_id
+                        )
 
-                # ── 7. CẬP NHẬT GRIPPER ─────────────────────────────────────
-                self.gripper.update_pose(
-                    is_grasping, self.scene['box_id']
-                )
+                    # Xóa HUD AUTO nếu đang có
+                    if self.hud_id != -1:
+                        p.removeUserDebugItem(self.hud_id)
+                        self.hud_id = -1
 
-                # ── 8. CẬP NHẬT HUD ─────────────────────────────────────────
-                self.hud_id = self.task.update_hud(
-                    ee_pos, self.hud_id, z_offset
-                )
+                    # ── Cập nhật SCADA status ────────────────────────────────
+                    self.scada.update_status(
+                        ee_pos,
+                        self.robot.get_joint_states(),
+                        "MANUAL"
+                    )
 
-                # ── 9. BƯỚC VẬT LÝ ─────────────────────────────────────────
+                # ── BƯỚC VẬT LÝ (chung cho cả AUTO và MANUAL) ───────────────
                 p.stepSimulation()
                 time.sleep(1. / 240.)
 
         except KeyboardInterrupt:
             print("\n  [STOP] Mo phong da dung theo yeu cau nguoi dung.")
         finally:
+            # Đóng SCADA Panel trước
+            self.scada.destroy()
             try:
                 p.disconnect()
             except p.error:
