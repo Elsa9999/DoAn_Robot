@@ -285,13 +285,16 @@ Khi cửa sổ PyBullet mở ra:
 | 5 | Wrist 2 | $\theta_5$ | 0 | 0.0997 | $-\pi/2$ |
 | 6 | Wrist 3 | $\theta_6$ | 0 | 0.0996 | 0 |
 
-*Ghi chú: $a$ là khoảng cách theo trục X, $d$ là offset theo trục Z, $\alpha$ là góc xoắn quanh X.*
+*Ghi chú: `a` là khoảng cách theo trục X, `d` là offset theo trục Z, `alpha` là góc xoắn quanh X.*
 
 ### 1. Động học thuận (Forward Kinematics)
 Động học thuận xác định vị trí và hướng của đầu công cụ (TCP - Tool Center Point) dựa trên giá trị góc của 6 khớp $\theta = [\theta_1, \theta_2, \theta_3, \theta_4, \theta_5, \theta_6]$.
 
 Ma trận biến đổi đồng nhất từ gốc (base) tới TCP được tính bằng cách nhân liên tiếp 6 ma trận biến đổi DH $T_i^{i-1}$:
-$$ T_{base}^{TCP} = T_1^0(\theta_1) \cdot T_2^1(\theta_2) \cdot T_3^2(\theta_3) \cdot T_4^3(\theta_4) \cdot T_5^4(\theta_5) \cdot T_6^5(\theta_6) $$
+
+$$
+T_{base}^{TCP} = T_1^0(\theta_1) \cdot T_2^1(\theta_2) \cdot T_3^2(\theta_3) \cdot T_4^3(\theta_4) \cdot T_5^4(\theta_5) \cdot T_6^5(\theta_6)
+$$
 
 Trong PyBullet, thao tác này được thực hiện tức thời bởi hàm `p.getLinkState()` dựa trên động lượng của engine vật lý.
 
