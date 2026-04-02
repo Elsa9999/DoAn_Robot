@@ -270,6 +270,41 @@ Khi cửa sổ PyBullet mở ra:
 
 ---
 
+## 🧮 Động học Tay máy (Kinematics & DH Parameters)
+
+Để điều khiển cánh tay mô phỏng chính xác, hệ thống dựa trên thông số hình học hình học thực tế của UR5e (Universal Robots e-Series). Thông số này sử dụng quy ước Denavit-Hartenberg (DH) tiêu chuẩn.
+
+### Bảng Thông số Denavit-Hartenberg (UR5e)
+
+| Khớp $i$ | Tên khớp (Joint) | $\theta_i$ (rad) | $a_i$ (m) | $d_i$ (m) | $\alpha_i$ (rad) |
+|:---:|---|:---:|:---:|:---:|:---:|
+| 1 | Shoulder Pan | $\theta_1$ | 0 | 0.1625 | $\pi/2$ |
+| 2 | Shoulder Lift | $\theta_2$ | -0.425 | 0 | 0 |
+| 3 | Elbow | $\theta_3$ | -0.3922 | 0 | 0 |
+| 4 | Wrist 1 | $\theta_4$ | 0 | 0.1333 | $\pi/2$ |
+| 5 | Wrist 2 | $\theta_5$ | 0 | 0.0997 | $-\pi/2$ |
+| 6 | Wrist 3 | $\theta_6$ | 0 | 0.0996 | 0 |
+
+*Ghi chú: $a$ là khoảng cách theo trục X, $d$ là offset theo trục Z, $\alpha$ là góc xoắn quanh X.*
+
+### 1. Động học thuận (Forward Kinematics)
+Động học thuận xác định vị trí và hướng của đầu công cụ (TCP - Tool Center Point) dựa trên giá trị góc của 6 khớp $\theta = [\theta_1, \theta_2, \theta_3, \theta_4, \theta_5, \theta_6]$.
+
+Ma trận biến đổi đồng nhất từ gốc (base) tới TCP được tính bằng cách nhân liên tiếp 6 ma trận biến đổi DH $T_i^{i-1}$:
+$$ T_{base}^{TCP} = T_1^0(\theta_1) \cdot T_2^1(\theta_2) \cdot T_3^2(\theta_3) \cdot T_4^3(\theta_4) \cdot T_5^4(\theta_5) \cdot T_6^5(\theta_6) $$
+
+Trong PyBullet, thao tác này được thực hiện tức thời bởi hàm `p.getLinkState()` dựa trên động lượng của engine vật lý.
+
+### 2. Động học nghịch (Inverse Kinematics - IK)
+Đây là bài toán trọng tâm khi Pick & Place: Cho trước tọa độ đích $(X, Y, Z)$ và hướng (Orientation), cần tìm ra giá trị 6 góc khớp $\theta$ để robot có thể với tới điểm đó.
+
+Khác với Robot ngoài thực tế (giải bằng phương pháp đại số/giải tích khép kín để lấy chính xác 1 trong 8 nghiệm), trong mô phỏng chúng tôi sử dụng **Damped Least-Squares (DLS)** IK Solver của PyBullet:
+* Hàm tính toán: `p.calculateInverseKinematics()`
+* Cho phép ghim **Rest Poses** (như tư thế *Elbow-Up*) để nghiệm hội tụ về tư thế giống con người, không bị gập cánh tay xuống sát bàn cồng kềnh.
+* Được kích hoạt mỗi khi `task_scheduler` cấp một tọa độ mục tiêu mới để nội suy S-Curve.
+
+---
+
 ## 📐 Thông số kỹ thuật
 
 | Thông số | Giá trị | Ghi chú |
