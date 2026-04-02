@@ -30,6 +30,7 @@
 import tkinter as tk
 from tkinter import ttk
 import math
+import random
 
 
 class ScadaPanel:
@@ -42,6 +43,8 @@ class ScadaPanel:
       - self.ik_target     : [X, Y, Z] mục tiêu cho IK
       - self.ik_run_flag   : True khi operator bấm "RUN IK"
       - self.fk_angles     : [q0..q5] góc 6 khớp từ thanh trượt (rad)
+      - self.spawn_flag    : True khi operator bấm "Spawn Box"
+      - self.spawn_pos     : [X, Y, Z] vị trí thả vật ngẫu nhiên
 
     Vòng lặp chính của simulation gọi update_gui() mỗi tick để xử lý
     sự kiện tkinter (non-blocking — không dùng mainloop()).
@@ -66,7 +69,7 @@ class ScadaPanel:
         # ── Khởi tạo cửa sổ chính ────────────────────────────────────────────
         self.root = tk.Tk()
         self.root.title("🏭 SCADA Panel — UR5e Pick & Place System")
-        self.root.geometry("460x780+20+20")   # Kích thước + vị trí góc trái trên
+        self.root.geometry("460x920+20+20")   # Kích thước + vị trí góc trái trên
         self.root.resizable(False, False)
         self.root.attributes('-topmost', True) # Luôn nổi trên PyBullet GUI
         self.root.configure(bg="#1e1e2e")      # Nền tối (dark theme)
@@ -77,6 +80,8 @@ class ScadaPanel:
         self.ik_target   = [0.3, 0.0, 0.4]  # Tọa độ IK mục tiêu
         self.ik_run_flag = False        # Cờ bấm nút RUN IK
         self.fk_angles   = list(self.REST_POSES)  # Góc 6 khớp từ slider
+        self.spawn_flag  = False        # Cờ bấm nút Spawn Box
+        self.spawn_pos   = [0.3, 0.0, 0.5]  # Vị trí thả vật (Z=0.5 rơi tự do)
 
         # ── Biến tkinter ──────────────────────────────────────────────────────
         self._mode_var    = tk.StringVar(value="AUTO")
@@ -95,6 +100,7 @@ class ScadaPanel:
         self._build_mode_section()
         self._build_ik_section()
         self._build_fk_section()
+        self._build_spawn_section()
         self._build_status_section()
 
         print("  [SCADA] Cua so SCADA Panel da khoi tao (tkinter).")
@@ -286,6 +292,38 @@ class ScadaPanel:
                   padx=8, pady=3,
                   command=self._on_fk_reset).pack(pady=(4, 2))
 
+    def _build_spawn_section(self):
+        """Phần nút Spawn Box — thả vật thể ngẫu nhiên vào vùng làm việc."""
+        frame = tk.LabelFrame(self.root,
+                               text="  📦  SPAWN VẬT THỂ  ",
+                               font=("Segoe UI", 10, "bold"),
+                               fg="#89b4fa", bg="#1e1e2e",
+                               bd=1, relief="groove",
+                               padx=12, pady=6)
+        frame.pack(fill="x", padx=12, pady=4)
+
+        # Mô tả
+        tk.Label(frame,
+                 text="Thả hộp đỏ ngẫu nhiên vào vùng\nlàm việc robot (rơi tự do từ Z=0.5m)",
+                 font=("Segoe UI", 8), fg="#a6adc8", bg="#1e1e2e",
+                 justify="center").pack(pady=(0, 4))
+
+        # Hiển thị tọa độ sẽ thả
+        self._spawn_info_var = tk.StringVar(value="Chưa spawn")
+        self._spawn_info_label = tk.Label(
+            frame, textvariable=self._spawn_info_var,
+            font=("Consolas", 9), fg="#f9e2af", bg="#1e1e2e")
+        self._spawn_info_label.pack()
+
+        # Nút Spawn
+        tk.Button(frame, text="📦  Drop Box (Thả vật ngẫu nhiên)",
+                  font=("Segoe UI", 10, "bold"),
+                  fg="#1e1e2e", bg="#f38ba8",
+                  activebackground="#eba0ac", activeforeground="#1e1e2e",
+                  relief="flat", cursor="hand2",
+                  padx=12, pady=5,
+                  command=self._on_spawn_box).pack(pady=(4, 2))
+
     def _build_status_section(self):
         """Phần hiển thị trạng thái live từ simulation."""
         frame = tk.LabelFrame(self.root,
@@ -341,6 +379,20 @@ class ScadaPanel:
             self.fk_angles[i] = rest
             self._fk_value_labels[i].config(text=f"{rest:+.2f}")
         print("  [SCADA] FK Reset → Elbow-Up REST_POSES")
+
+    def _on_spawn_box(self):
+        """Operator bấm nút Spawn Box — tạo tọa độ ngẫu nhiên và bật cờ."""
+        # Phạm vi ngẫu nhiên trong tầm với camera (bán kính 0.75m)
+        rand_x = random.uniform(0.25, 0.55)
+        rand_y = random.uniform(-0.25, 0.25)
+        drop_z = 0.5   # Rơi tự do từ độ cao 0.5m
+
+        self.spawn_pos  = [rand_x, rand_y, drop_z]
+        self.spawn_flag = True
+
+        info_text = f"Drop → ({rand_x:.3f}, {rand_y:.3f}, {drop_z:.1f})"
+        self._spawn_info_var.set(info_text)
+        print(f"  [SCADA] Spawn Box → pos = [{rand_x:.3f}, {rand_y:.3f}, {drop_z:.1f}]")
 
     # ══════════════════════════════════════════════════════════════════════════
     # PUBLIC API — Gọi từ vòng lặp chính simulation.py

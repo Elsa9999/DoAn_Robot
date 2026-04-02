@@ -46,24 +46,28 @@ class Gripper:
         robot: đối tượng UR5eRobot — cần để đọc vị trí và hướng TCP
                (giống gripper vật lý cần biết mặt bích nó đang gắn vào đâu)
 
-        Gripper ảo là một khối hộp nhỏ:
-          Kích thước: 6cm × 6cm × 10cm
-          Màu: xám đậm (giả kim loại)
+        Gripper ảo là hình trụ (Magnetic Gripper — giác hút nam châm):
+          Bán kính: 0.03m (đường kính 6cm)
+          Chiều cao: 0.02m (dẹt, giống giác hút thực tế)
+          Màu: xám thép sáng (giả kim loại nam châm)
           Khối lượng: 0 (không chịu trọng lực — luôn bám theo lệnh)
+
+        Logic update_pose (ép dính vật thể theo TCP) phản ánh đúng bản chất
+        nam châm điện: khi cấp điện → vật dính theo, ngắt điện → vật rơi.
         """
         self.robot = robot  # Lưu tham chiếu đến robot để đọc vị trí TCP
 
-        # ── Tạo hình học 3D cho gripper ──────────────────────────────────────
-        # halfExtents: bán kích thước theo 3 trục (mét)
-        # Khối đầy đủ = 2 × halfExtents = 6cm × 6cm × 10cm
+        # ── Tạo hình học 3D cho Magnetic Gripper ─────────────────────────────
+        # Hình trụ: radius=0.03m, height=0.02m — mô phỏng giác hút nam châm
+        # Giác hút thực tế là đĩa kim loại dẹt, gắn cuộn dây điện từ bên trong
         gripper_shape = p.createCollisionShape(
-            p.GEOM_BOX,
-            halfExtents=[0.03, 0.03, 0.05]   # Hình dạng va chạm (invisble)
+            p.GEOM_CYLINDER,
+            radius=0.03, height=0.02   # Hình dạng va chạm
         )
         gripper_visual = p.createVisualShape(
-            p.GEOM_BOX,
-            halfExtents=[0.03, 0.03, 0.05],
-            rgbaColor=[0.3, 0.3, 0.3, 0.95]  # Xám đậm, alpha 95% (hơi trong)
+            p.GEOM_CYLINDER,
+            radius=0.03, length=0.02,
+            rgbaColor=[0.55, 0.55, 0.6, 0.95]  # Xám thép, alpha 95%
         )
 
         # Tạo vật thể trong simulation: mass=0 → không chịu gravity, không bị ngã
@@ -75,7 +79,7 @@ class Gripper:
             basePosition=[0, 0, 0.3]
         )
 
-        print("  [OK]  Gripper da duoc tao.")
+        print("  [OK]  Magnetic Gripper (nam cham dien) da duoc tao.")
 
     @staticmethod
     def _rotate_by_quat(vec: list, quat: tuple) -> list:

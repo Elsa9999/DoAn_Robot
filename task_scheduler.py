@@ -330,79 +330,49 @@ class TaskScheduler:
             self.loop_count += 1
             print(f"\n  [OK] Hoan thanh chu trinh #{self.loop_count}!")
 
-            # ── CHẾ ĐỘ LẶP VÔ HẠN VỚI VISION (Endless Vision Mode) ──────────
-            # Mỗi khi về HOME: đặt lại vật ở vị trí mới → quét camera → lấy pick_pos mới
-            # Mô phỏng dây chuyền sản xuất thực: vật liên tục đến từ băng tải
-            if self.camera is not None and self.box_id >= 0:
-                # ── BƯỚC 1: Dịch chuyển vật đến vị trí ngẫu nhiên mới ────────
-                # Tương đương băng tải đưa sản phẩm tiếp theo vào vùng làm việc
-                rand_x = np.random.uniform(*self.BOX_RAND_X)
-                rand_y = np.random.uniform(*self.BOX_RAND_Y)
-                new_box_pos = [rand_x, rand_y, 0.025]
-                p.resetBasePositionAndOrientation(
-                    self.box_id,
-                    new_box_pos,
-                    p.getQuaternionFromEuler([0, 0, 0])
-                )
-                print(f"  [VISION] Box teleport → X={rand_x:+.4f}, Y={rand_y:+.4f}")
-
-                # Chạy 1 bước vật lý để simulation kịp render vật tại vị trí mới
-                # (nếu chụp ảnh ngay thì camera vẫn thấy vật ở vị trí CŨ)
-                p.stepSimulation()
-
-                # ── BƯỚC 2: Quét camera để lấy pick_pos MỚI + yaw ───────────
-                print("  [VISION] Dang quet camera de xac dinh vi tri moi...")
+            # ── QUÉT CAMERA TÌM VẬT MỚI (thay thế Endless Teleport cũ) ──────
+            # Sau khi hoàn thành chu trình, robot đã về HOME.
+            # Bây giờ quét camera xem có vật nào trong vùng làm việc không.
+            # Nếu có → bắt đầu chu trình mới tự động.
+            # Nếu không → chờ IDLE, operator dùng nút SCADA "Spawn Box" để thả vật.
+            if self.camera is not None:
+                p.stepSimulation()  # Render trước khi chụp
+                print("  [VISION] Dang quet camera tim vat moi...")
                 detected = self.camera.detect_object()
 
                 if detected is not None:
-                    # ── BƯỚC 3: Cập nhật pick_pos và grasp_yaw ───────────────
+                    # Phát hiện vật → cập nhật pick_pos và bắt đầu ngay
                     self.pick_pos  = [detected.x, detected.y, detected.z]
                     self.grasp_yaw = detected.yaw
+                    self.place_pos = list(self.FIXED_PLACE_POS)
+
+                    self.pre_pick_pos     = [self.pick_pos[0], self.pick_pos[1],
+                                             SAFE_LIFT_HEIGHT]
+                    self.pre_place_pos    = [self.place_pos[0], self.place_pos[1],
+                                             SAFE_LIFT_HEIGHT]
+                    self.pick_contact_pos = [self.pick_pos[0], self.pick_pos[1],
+                                             self.pick_pos[2] + 0.06]
+
                     print(f"  [VISION] pick_pos moi = "
                           f"{[f'{v:+.4f}' for v in self.pick_pos]}")
                     print(f"  [VISION] grasp_yaw    = "
                           f"{math.degrees(self.grasp_yaw):+.1f} deg")
+                    print(f"  [EYES]   Chuan bi chu trinh #{self.loop_count + 1}"
+                          f" voi vi tri pick moi...\n")
+
+                    self.state = STATE_IDLE
+                    time.sleep(0.3)
+                    self.start(current_ee_pos)
                 else:
-                    # Fallback: dùng vị trí teleport
-                    self.pick_pos = new_box_pos
-                    print(f"  [VISION] Fallback: dung vi tri teleport = "
-                          f"{new_box_pos}")
-                    print(f"  [VISION] Giu nguyen grasp_yaw = "
-                          f"{math.degrees(self.grasp_yaw):+.1f} deg")
-
-                # ── BƯỚC 4: Đặt lại place_pos cố định ───────────────────────
-                self.place_pos = list(self.FIXED_PLACE_POS)
-
-                # ── BƯỚC 5: Tính lại pre_pick, pick_contact, pre_place ──────
-                self.pre_pick_pos     = [self.pick_pos[0],  self.pick_pos[1],
-                                         SAFE_LIFT_HEIGHT]
-                self.pre_place_pos    = [self.place_pos[0], self.place_pos[1],
-                                         SAFE_LIFT_HEIGHT]
-                self.pick_contact_pos = [self.pick_pos[0],  self.pick_pos[1],
-                                         self.pick_pos[2] + 0.06]
-
-                print(f"  [VISION] place_pos (fixed) = {self.place_pos}")
-                print(f"  [VISION] pre_pick_pos      = {self.pre_pick_pos}")
-                print(f"  [VISION] pick_contact_pos  = {self.pick_contact_pos}")
-                print(f"  [EYES]   Chuan bi chu trinh #{self.loop_count + 1}"
-                      f" voi vi tri pick moi...\n")
+                    # Không thấy vật → chờ IDLE
+                    print("  [VISION] Khong phat hien vat moi.")
+                    print("  [IDLE]   Cho operator tha vat moi (SCADA: Spawn Box)...\n")
+                    self.state = STATE_IDLE
 
             else:
-                # ── LEGACY MODE: Đảo pick/place (không có Vision) ────────────
-                print(f"  [LEGACY] Khong co Vision — dao vi tri pick/place.")
-                self.pick_pos, self.place_pos = \
-                    self.place_pos, self.pick_pos
-                self.pre_pick_pos, self.pre_place_pos = \
-                    self.pre_place_pos, self.pre_pick_pos
-                self.pick_contact_pos = [
-                    self.pick_pos[0], self.pick_pos[1],
-                    self.pick_pos[2] + 0.06
-                ]
-
-            self.state = STATE_IDLE
-            # Nghỉ ngắn để camera có thời gian render box ở vị trí mới
-            time.sleep(0.3)
-            self.start(current_ee_pos)
+                # ── LEGACY MODE (không có camera): chờ IDLE ──────────────────
+                print(f"  [LEGACY] Khong co Vision — cho tai IDLE.")
+                self.state = STATE_IDLE
 
         # ── VẼ DẤU VẾT QUỸ ĐẠO TCP (Debug Trail) ────────────────────────────
         # Vẽ đường thẳng nhỏ từ điểm TCP lần trước đến lần này → tạo ra vệt xanh

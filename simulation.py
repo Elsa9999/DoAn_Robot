@@ -210,7 +210,7 @@ class SimulationApp:
         """
         # --- Tọa độ cấu hình ---
         PICK_POS    = [0.4,  0.2, 0.025]
-        PLACE_POS   = [0.4, -0.2, 0.025]
+        PLACE_POS   = [0.0, -0.4, 0.02]
         HOME_POS    = [0.3,  0.0, 0.6]
         BOX_HALF_Z  = 0.025
 
@@ -234,6 +234,17 @@ class SimulationApp:
             spinningFriction=0.3
         )
 
+        # --- Khay chứa đồ (Tray) tại vị trí PLACE ---
+        # Load tray/traybox.urdf từ pybullet_data, đổi màu xanh dương
+        tray_id = p.loadURDF(
+            "tray/traybox.urdf",
+            basePosition=[PLACE_POS[0], PLACE_POS[1], 0.0],
+            useFixedBase=True
+        )
+        # Đổi màu khay sang xanh dương
+        p.changeVisualShape(tray_id, -1, rgbaColor=[0.2, 0.4, 0.9, 1.0])
+        print(f"  [TRAY] Khay chua do da duoc dat tai {PLACE_POS[:2]}")
+
         # --- Marker điểm PICK (cột vàng nhỏ) ---
         pick_marker_col = p.createCollisionShape(
             p.GEOM_CYLINDER, radius=0.01, height=0.002
@@ -249,29 +260,14 @@ class SimulationApp:
             basePosition=[PICK_POS[0], PICK_POS[1], 0.001]
         )
 
-        # --- Marker điểm PLACE (đĩa xanh lá) ---
-        place_marker_col = p.createCollisionShape(
-            p.GEOM_CYLINDER, radius=0.01, height=0.002
-        )
-        place_marker_vis = p.createVisualShape(
-            p.GEOM_CYLINDER, radius=0.04, length=0.002,
-            rgbaColor=[0.0, 0.85, 0.2, 0.7]
-        )
-        p.createMultiBody(
-            baseMass=0,
-            baseCollisionShapeIndex=place_marker_col,
-            baseVisualShapeIndex=place_marker_vis,
-            basePosition=[PLACE_POS[0], PLACE_POS[1], 0.001]
-        )
-
         # --- Nhãn text 3D ---
         p.addUserDebugText(
             "📦 PICK", [PICK_POS[0], PICK_POS[1], 0.12],
             textColorRGB=[1, 0.6, 0], textSize=1.3
         )
         p.addUserDebugText(
-            "🎯 PLACE", [PLACE_POS[0], PLACE_POS[1], 0.12],
-            textColorRGB=[0, 0.8, 0.2], textSize=1.3
+            "🎯 PLACE (Tray)", [PLACE_POS[0], PLACE_POS[1], 0.12],
+            textColorRGB=[0.2, 0.4, 0.9], textSize=1.3
         )
 
         return {
@@ -310,6 +306,68 @@ class SimulationApp:
 
                 # Đọc chế độ hiện tại từ SCADA Panel
                 scada_mode = self.scada.mode   # "AUTO" hoặc "MANUAL"
+
+                # ── XỊ LÝ SPAWN BOX (cờ từ SCADA) ───────────────────────────
+                # Khi operator bấm nút Spawn Box trên SCADA:
+                #   1. Teleport hộp đến vị trí ngẫu nhiên (X, Y, Z=0.5m)
+                #   2. Reset vận tốc → hộp rơi tự do xuống mặt bàn
+                #   3. Nếu đang IDLE + AUTO → chờ hộp rơi xong rồi quét camera
+                if self.scada.spawn_flag:
+                    self.scada.spawn_flag = False
+                    spawn_pos = self.scada.spawn_pos
+                    box_id = self.scene['box_id']
+
+                    # Teleport + reset vận tốc
+                    p.resetBasePositionAndOrientation(
+                        box_id, spawn_pos,
+                        p.getQuaternionFromEuler([0, 0, 0])
+                    )
+                    p.resetBaseVelocity(box_id, [0, 0, 0], [0, 0, 0])
+                    print(f"  [SPAWN] Box da duoc tha tai "
+                          f"({spawn_pos[0]:.3f}, {spawn_pos[1]:.3f}, "
+                          f"{spawn_pos[2]:.1f}) — roi tu do...")
+
+                    # Nếu đang AUTO + IDLE → lên lịch quét camera sau 0.5s
+                    # (đợi hộp rơi xuống mặt bàn)
+                    if (scada_mode == "AUTO" and
+                            self.task.state == STATE_IDLE):
+                        print("  [SPAWN] Doi hop roi xuong mat ban...")
+                        # Chạy 120 bước (~0.5s) để hộp rơi xuống
+                        for _ in range(120):
+                            p.stepSimulation()
+                            time.sleep(1. / 240.)
+
+                        # Quét camera
+                        detected = self.camera.detect_object()
+                        if detected is not None:
+                            ee_pos_now = self.robot.get_ee_position()
+                            self.task.pick_pos = [
+                                detected.x, detected.y, detected.z
+                            ]
+                            self.task.grasp_yaw = detected.yaw
+                            self.task.place_pos = list(
+                                self.task.FIXED_PLACE_POS
+                            )
+                            self.task.pre_pick_pos = [
+                                detected.x, detected.y, 0.4
+                            ]
+                            self.task.pre_place_pos = [
+                                self.task.place_pos[0],
+                                self.task.place_pos[1], 0.4
+                            ]
+                            self.task.pick_contact_pos = [
+                                detected.x, detected.y,
+                                detected.z + 0.06
+                            ]
+                            self.task.start(ee_pos_now)
+                            print(f"  [VISION] pick_pos = "
+                                  f"[{detected.x:+.4f}, "
+                                  f"{detected.y:+.4f}, "
+                                  f"{detected.z:+.4f}]")
+                            print(f"  [VISION] Bat dau chu trinh moi!\n")
+                        else:
+                            print("  [VISION] Khong thay vat — "
+                                  "co the nam ngoai tam voi.\n")
 
                 # ── LẤY VỊ TRÍ EE HIỆN TẠI (dùng chung cho cả 2 chế độ) ────
                 ee_pos = self.robot.get_ee_position()
